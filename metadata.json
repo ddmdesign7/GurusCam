@@ -1,0 +1,5 @@
+{
+  "name": "RoopCam AI",
+  "description": "Real-time AI face swap application with TikTok-style interface. Features live camera swap, image/video upload, and high-quality deepfake rendering using Gemini AI.",
+  "requestFramePermissions": ["camera"]
+}
