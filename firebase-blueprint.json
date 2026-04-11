@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "Post": {
+      "title": "Post",
+      "description": "A community post containing a face-swapped creation",
+      "type": "object",
+      "properties": {
+        "imageUrl": { "type": "string", "description": "URL of the swapped image" },
+        "authorId": { "type": "string", "description": "UID of the creator" },
+        "authorName": { "type": "string", "description": "Display name of the creator" },
+        "likes": { "type": "number", "description": "Number of likes" },
+        "commentsCount": { "type": "number", "description": "Number of comments" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["imageUrl", "authorId", "createdAt"]
+    },
+    "Like": {
+      "title": "Like",
+      "description": "A like on a post",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user who liked" },
+        "postId": { "type": "string", "description": "ID of the post" }
+      },
+      "required": ["userId", "postId"]
+    }
+  },
+  "firestore": {
+    "/posts/{postId}": {
+      "schema": "Post",
+      "description": "Collection of community posts"
+    },
+    "/posts/{postId}/likes/{userId}": {
+      "schema": "Like",
+      "description": "Subcollection of likes for a post"
+    }
+  }
+}

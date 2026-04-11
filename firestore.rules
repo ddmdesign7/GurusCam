@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: posts
+    // Document ID: auto-generated
+    // Fields:
+    //   - imageUrl: string (required, < 1MB) - URL of the swapped image
+    //   - authorId: string (required) - UID of the creator
+    //   - authorName: string (optional, < 100 chars) - Display name of the creator
+    //   - likes: number (required, >= 0) - Number of likes
+    //   - commentsCount: number (required, >= 0) - Number of comments
+    //   - createdAt: timestamp (required) - Creation timestamp
+    //
+    // Collection: posts/{postId}/likes
+    // Document ID: userId
+    // Fields:
+    //   - userId: string (required) - UID of the user who liked
+    //   - postId: string (required) - ID of the post
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "keljoel0147@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['imageUrl', 'authorId', 'likes', 'commentsCount', 'createdAt']) &&
+             data.imageUrl is string && data.imageUrl.size() < 1048576 &&
+             data.authorId is string && data.authorId == request.auth.uid &&
+             data.likes is number && data.likes >= 0 &&
+             data.commentsCount is number && data.commentsCount >= 0 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidLike(data, postId, userId) {
+      return data.keys().hasAll(['userId', 'postId']) &&
+             data.userId == userId &&
+             data.userId == request.auth.uid &&
+             data.postId == postId;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && isValidPost(request.resource.data);
+      
+      allow update: if isAuthenticated() && (
+        // Owner can update metadata (except authorId and createdAt)
+        (isOwner(resource.data.authorId) && 
+         isValidPost(request.resource.data) &&
+         request.resource.data.authorId == resource.data.authorId &&
+         request.resource.data.createdAt == resource.data.createdAt) ||
+        // Anyone can increment likes/comments if they follow the atomic pattern
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']) &&
+         math.abs(request.resource.data.likes - resource.data.likes) == 1)
+      );
+      
+      allow delete: if isOwner(resource.data.authorId) || isAdmin();
+
+      match /likes/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidLike(request.resource.data, postId, userId);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+  }
+}

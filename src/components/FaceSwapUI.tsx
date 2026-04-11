@@ -1,9 +1,12 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Camera, Video, Zap, Upload, Download, X, RefreshCcw, User, Settings, MoreHorizontal } from 'lucide-react';
+import { Camera, Video, Zap, Upload, Download, X, RefreshCcw, User as UserIcon, Settings, MoreHorizontal, LogIn } from 'lucide-react';
 import { CameraView } from './CameraView';
 import { cn } from '../lib/utils';
 import { swapFaces } from '../lib/face-swap';
+import { auth, db, signIn, handleFirestoreError, OperationType } from '../firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { User } from 'firebase/auth';
 
 const TARGET_FACES = [
   { id: 'elon', name: 'Elon', url: 'https://picsum.photos/seed/elon/200/200' },
@@ -12,12 +15,24 @@ const TARGET_FACES = [
   { id: 'custom', name: 'Custom', url: null },
 ];
 
-export const FaceSwapUI: React.FC = () => {
+interface FaceSwapUIProps {
+  onOpenGallery: () => void;
+  user: User | null;
+}
+
+export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) => {
   const [mode, setMode] = useState<'photo' | 'video' | 'live'>('photo');
   const [selectedFace, setSelectedFace] = useState(TARGET_FACES[0]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [customFace, setCustomFace] = useState<string | null>(null);
+  const [isFaceDetected, setIsFaceDetected] = useState(false);
+  const [filters, setFilters] = useState({
+    brightness: 100,
+    contrast: 100,
+    saturation: 100,
+  });
+  const [showFilters, setShowFilters] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFaceSelect = (face: typeof TARGET_FACES[0]) => {
@@ -40,6 +55,7 @@ export const FaceSwapUI: React.FC = () => {
       reader.readAsDataURL(file);
     }
   };
+  const handleCapture = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
 
@@ -92,6 +108,48 @@ export const FaceSwapUI: React.FC = () => {
     }
   };
 
+  const handlePost = async () => {
+    if (!user) {
+      await signIn();
+      return;
+    }
+    if (!resultImage || isProcessing) return;
+    setIsProcessing(true);
+
+    try {
+      const canvas = document.createElement('canvas');
+      const img = new Image();
+      img.src = resultImage;
+      await new Promise((resolve) => (img.onload = resolve));
+      
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      ctx.filter = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`;
+      ctx.drawImage(img, 0, 0);
+      
+      const finalImage = canvas.toDataURL('image/jpeg', 0.7);
+
+      await addDoc(collection(db, 'posts'), {
+        imageUrl: finalImage,
+        authorId: user.uid,
+        authorName: user.displayName || 'Anonymous',
+        likes: 0,
+        commentsCount: 0,
+        createdAt: serverTimestamp(),
+      });
+
+      setResultImage(null);
+      alert("Post successful!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'posts');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   return (
     <div className="relative h-screen w-screen bg-black text-white font-sans overflow-hidden">
       {/* Main Camera View */}
@@ -114,25 +172,101 @@ export const FaceSwapUI: React.FC = () => {
               alt="Swapped Result" 
               className="w-full h-full object-cover"
               referrerPolicy="no-referrer"
+              style={{
+                filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`
+              }}
             />
             
             {/* Result Controls */}
-            <div className="absolute top-10 left-6 right-6 flex justify-between items-center">
+            <div className="absolute top-10 left-6 right-6 flex justify-between items-center z-50">
               <button 
-                onClick={() => setResultImage(null)}
+                onClick={() => {
+                  setResultImage(null);
+                  setShowFilters(false);
+                  setFilters({ brightness: 100, contrast: 100, saturation: 100 });
+                }}
                 className="p-3 bg-black/40 backdrop-blur-md rounded-full border border-white/10 hover:bg-black/60 transition-colors"
               >
                 <X className="w-6 h-6" />
               </button>
               <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={cn(
+                    "p-3 backdrop-blur-md rounded-full border border-white/10 transition-colors",
+                    showFilters ? "bg-white text-black" : "bg-black/40 hover:bg-black/60"
+                  )}
+                >
+                  <Settings className="w-6 h-6" />
+                </button>
                 <button className="p-3 bg-black/40 backdrop-blur-md rounded-full border border-white/10 hover:bg-black/60 transition-colors">
                   <Download className="w-6 h-6" />
                 </button>
-                <button className="px-6 py-3 bg-white text-black font-bold rounded-full hover:bg-white/90 transition-colors">
-                  Post
+                <button 
+                  onClick={handlePost}
+                  className="px-6 py-3 bg-white text-black font-bold rounded-full hover:bg-white/90 transition-colors"
+                >
+                  {user ? 'Post' : 'Login to Post'}
                 </button>
               </div>
             </div>
+
+            {/* Filter Sliders */}
+            <AnimatePresence>
+              {showFilters && (
+                <motion.div
+                  initial={{ y: 100, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ y: 100, opacity: 0 }}
+                  className="absolute bottom-10 left-6 right-6 bg-black/60 backdrop-blur-xl p-6 rounded-3xl border border-white/10 z-50"
+                >
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold uppercase tracking-widest opacity-60">
+                        <span>Brightness</span>
+                        <span>{filters.brightness}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="150" 
+                        value={filters.brightness}
+                        onChange={(e) => setFilters({ ...filters, brightness: parseInt(e.target.value) })}
+                        className="w-full accent-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold uppercase tracking-widest opacity-60">
+                        <span>Contrast</span>
+                        <span>{filters.contrast}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="150" 
+                        value={filters.contrast}
+                        onChange={(e) => setFilters({ ...filters, contrast: parseInt(e.target.value) })}
+                        className="w-full accent-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold uppercase tracking-widest opacity-60">
+                        <span>Saturation</span>
+                        <span>{filters.saturation}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="200" 
+                        value={filters.saturation}
+                        onChange={(e) => setFilters({ ...filters, saturation: parseInt(e.target.value) })}
+                        className="w-full accent-white"
+                      />
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
@@ -142,8 +276,11 @@ export const FaceSwapUI: React.FC = () => {
         <>
           {/* Top Bar */}
           <div className="absolute top-10 left-6 right-6 flex justify-between items-center z-20">
-            <button className="p-2 bg-black/20 backdrop-blur-sm rounded-full">
-              <Settings className="w-6 h-6" />
+            <button 
+              onClick={onOpenGallery}
+              className="p-2 bg-black/20 backdrop-blur-sm rounded-full"
+            >
+              <UserIcon className="w-6 h-6" />
             </button>
             <div className="flex gap-4 bg-black/20 backdrop-blur-sm px-4 py-2 rounded-full border border-white/10">
               <button 
