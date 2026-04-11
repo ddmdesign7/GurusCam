@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Camera, Video, Zap, Upload, Download, X, RefreshCcw, User as UserIcon, Settings, MoreHorizontal, LogIn } from 'lucide-react';
+import { Camera, Video, Zap, Upload, Download, X, RefreshCcw, User as UserIcon, Settings, MoreHorizontal, LogIn, Sun, ZapOff, ZoomIn, ZoomOut } from 'lucide-react';
 import { CameraView } from './CameraView';
 import { cn } from '../lib/utils';
 import { swapFaces } from '../lib/face-swap';
@@ -22,11 +22,15 @@ interface FaceSwapUIProps {
 
 export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) => {
   const [mode, setMode] = useState<'photo' | 'video' | 'live'>('photo');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [selectedFace, setSelectedFace] = useState(TARGET_FACES[0]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [customFace, setCustomFace] = useState<string | null>(null);
   const [isFaceDetected, setIsFaceDetected] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [torch, setTorch] = useState(false);
+  const [videoPreview, setVideoPreview] = useState<string | null>(null);
   const [filters, setFilters] = useState({
     brightness: 100,
     contrast: 100,
@@ -34,6 +38,7 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
   });
   const [showFilters, setShowFilters] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
 
   const handleFaceSelect = (face: typeof TARGET_FACES[0]) => {
     if (face.id === 'custom') {
@@ -55,6 +60,69 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
       reader.readAsDataURL(file);
     }
   };
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setVideoPreview(url);
+      processVideoFrame(url);
+    }
+  };
+
+  const processVideoFrame = async (videoUrl: string) => {
+    setIsProcessing(true);
+    try {
+      const video = document.createElement('video');
+      video.src = videoUrl;
+      video.crossOrigin = "anonymous";
+      await new Promise((resolve) => (video.onloadeddata = resolve));
+      video.currentTime = 0.1; // Seek a bit to get a frame
+      await new Promise((resolve) => (video.onseeked = resolve));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0);
+      const frameBase64 = canvas.toDataURL('image/jpeg');
+
+      let targetBase64 = selectedFace.url;
+      if (!targetBase64) {
+        alert("Please select a target face");
+        setIsProcessing(false);
+        return;
+      }
+
+      const targetImg = new Image();
+      targetImg.crossOrigin = "anonymous";
+      targetImg.src = targetBase64;
+      await new Promise((resolve) => (targetImg.onload = resolve));
+      
+      const targetCanvas = document.createElement('canvas');
+      targetCanvas.width = targetImg.width;
+      targetCanvas.height = targetImg.height;
+      targetCanvas.getContext('2d')?.drawImage(targetImg, 0, 0);
+      const targetBase64Data = targetCanvas.toDataURL('image/jpeg');
+
+      const swapped = await swapFaces(targetBase64Data, frameBase64);
+      setResultImage(swapped);
+    } catch (error) {
+      console.error("Video processing failed:", error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDownload = () => {
+    if (!resultImage) return;
+    const link = document.createElement('a');
+    link.href = resultImage;
+    link.download = `face-swap-${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
   const handleCapture = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
@@ -70,9 +138,11 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       
-      // Flip horizontally to match mirror preview
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
+      // Flip horizontally to match mirror preview if using front camera
+      if (facingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
       ctx.drawImage(video, 0, 0);
       
       const sourceBase64 = canvas.toDataURL('image/jpeg', 0.8);
@@ -155,6 +225,9 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
       {/* Main Camera View */}
       <CameraView 
         onFaceDetected={(d) => setIsFaceDetected(!!d)}
+        facingMode={facingMode}
+        zoom={zoom}
+        torch={torch}
         className={cn(resultImage ? "opacity-0" : "opacity-100")}
       />
 
@@ -199,7 +272,10 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
                 >
                   <Settings className="w-6 h-6" />
                 </button>
-                <button className="p-3 bg-black/40 backdrop-blur-md rounded-full border border-white/10 hover:bg-black/60 transition-colors">
+                <button 
+                  onClick={handleDownload}
+                  className="p-3 bg-black/40 backdrop-blur-md rounded-full border border-white/10 hover:bg-black/60 transition-colors"
+                >
                   <Download className="w-6 h-6" />
                 </button>
                 <button 
@@ -277,10 +353,10 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
           {/* Top Bar */}
           <div className="absolute top-10 left-6 right-6 flex justify-between items-center z-20">
             <button 
-              onClick={onOpenGallery}
-              className="p-2 bg-black/20 backdrop-blur-sm rounded-full"
+              onClick={() => setFacingMode(prev => prev === 'user' ? 'environment' : 'user')}
+              className="p-2 bg-black/20 backdrop-blur-sm rounded-full active:scale-90 transition-transform"
             >
-              <UserIcon className="w-6 h-6" />
+              <RefreshCcw className="w-6 h-6" />
             </button>
             <div className="flex gap-4 bg-black/20 backdrop-blur-sm px-4 py-2 rounded-full border border-white/10">
               <button 
@@ -302,8 +378,11 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
                 Live
               </button>
             </div>
-            <button className="p-2 bg-black/20 backdrop-blur-sm rounded-full">
-              <MoreHorizontal className="w-6 h-6" />
+            <button 
+              onClick={onOpenGallery}
+              className="p-2 bg-black/20 backdrop-blur-sm rounded-full"
+            >
+              <UserIcon className="w-6 h-6" />
             </button>
           </div>
 
@@ -316,6 +395,41 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
               accept="image/*" 
               className="hidden" 
             />
+            <input 
+              type="file" 
+              ref={videoInputRef} 
+              onChange={handleVideoUpload} 
+              accept="video/*" 
+              className="hidden" 
+            />
+            
+            {/* Torch Toggle */}
+            <button
+              onClick={() => setTorch(!torch)}
+              className={cn(
+                "p-3 rounded-full backdrop-blur-md border border-white/10 transition-all",
+                torch ? "bg-yellow-500 text-black" : "bg-black/20 text-white"
+              )}
+            >
+              {torch ? <Zap className="w-6 h-6" /> : <ZapOff className="w-6 h-6" />}
+            </button>
+
+            {/* Zoom Controls */}
+            <div className="flex flex-col gap-2 bg-black/20 backdrop-blur-md p-2 rounded-full border border-white/10">
+              <button onClick={() => setZoom(prev => Math.min(prev + 0.5, 5))} className="p-2 hover:bg-white/10 rounded-full">
+                <ZoomIn className="w-5 h-5" />
+              </button>
+              <div className="h-20 w-1 bg-white/20 mx-auto rounded-full relative">
+                <div 
+                  className="absolute bottom-0 left-0 right-0 bg-white rounded-full transition-all" 
+                  style={{ height: `${(zoom - 1) / 4 * 100}%` }}
+                />
+              </div>
+              <button onClick={() => setZoom(prev => Math.max(prev - 0.5, 1))} className="p-2 hover:bg-white/10 rounded-full">
+                <ZoomOut className="w-5 h-5" />
+              </button>
+            </div>
+
             {TARGET_FACES.map((face) => (
               <button
                 key={face.id}
@@ -398,11 +512,14 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
               </button>
 
               {/* Upload Button */}
-              <button className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+              <button 
+                onClick={() => videoInputRef.current?.click()}
+                className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity"
+              >
                 <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center border border-white/10">
                   <Upload className="w-6 h-6" />
                 </div>
-                <span className="text-[10px] font-bold uppercase">Upload</span>
+                <span className="text-[10px] font-bold uppercase">Video</span>
               </button>
             </div>
           </div>

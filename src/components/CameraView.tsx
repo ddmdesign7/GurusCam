@@ -7,17 +7,24 @@ interface CameraViewProps {
   isRecording?: boolean;
   activeFilter?: string;
   className?: string;
+  facingMode?: 'user' | 'environment';
+  zoom?: number;
+  torch?: boolean;
 }
 
 export const CameraView: React.FC<CameraViewProps> = ({ 
   onFaceDetected, 
   isRecording, 
   activeFilter,
-  className 
+  className,
+  facingMode = 'user',
+  zoom = 1,
+  torch = false
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
+  const [capabilities, setCapabilities] = useState<MediaTrackCapabilities | null>(null);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -38,15 +45,61 @@ export const CameraView: React.FC<CameraViewProps> = ({
   }, [isModelLoaded]);
 
   const startVideo = () => {
+    // Stop existing stream if any
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+
     navigator.mediaDevices
-      .getUserMedia({ video: { width: 1280, height: 720, facingMode: 'user' } })
+      .getUserMedia({ 
+        video: { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 }, 
+          facingMode 
+        } 
+      })
       .then((stream) => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          const track = stream.getVideoTracks()[0];
+          // @ts-ignore - getCapabilities is not in all types
+          if (track.getCapabilities) {
+            // @ts-ignore
+            setCapabilities(track.getCapabilities());
+          }
         }
       })
       .catch((err) => console.error("Camera error:", err));
   };
+
+  useEffect(() => {
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      const track = stream.getVideoTracks()[0];
+      
+      const constraints: any = {};
+      // @ts-ignore
+      if (capabilities?.zoom) {
+        constraints.zoom = zoom;
+      }
+      // @ts-ignore
+      if (capabilities?.torch !== undefined) {
+        constraints.torch = torch;
+      }
+
+      if (Object.keys(constraints).length > 0) {
+        track.applyConstraints({ advanced: [constraints] } as any)
+          .catch(err => console.error("Constraint error:", err));
+      }
+    }
+  }, [zoom, torch, capabilities]);
+
+  useEffect(() => {
+    if (isModelLoaded) {
+      startVideo();
+    }
+  }, [isModelLoaded, facingMode]);
 
   useEffect(() => {
     let interval: any;
@@ -86,11 +139,17 @@ export const CameraView: React.FC<CameraViewProps> = ({
         autoPlay
         muted
         playsInline
-        className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+        className={cn(
+          "absolute inset-0 w-full h-full object-cover",
+          facingMode === 'user' && "scale-x-[-1]"
+        )}
       />
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 w-full h-full object-cover scale-x-[-1] pointer-events-none"
+        className={cn(
+          "absolute inset-0 w-full h-full object-cover pointer-events-none",
+          facingMode === 'user' && "scale-x-[-1]"
+        )}
       />
       {!isModelLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
