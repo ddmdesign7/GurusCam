@@ -116,13 +116,17 @@ export const Gallery: React.FC<GalleryProps> = ({ onClose, user }) => {
             <motion.div 
               key={post.id}
               className="group relative aspect-[3/4] rounded-3xl overflow-hidden bg-white/5 border border-white/10"
-              whileHover={{ scale: 1.02 }}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              whileHover={{ y: -5 }}
             >
-              <img 
+              <motion.img 
                 src={post.imageUrl} 
                 alt={`Post by ${post.authorName}`} 
                 className="w-full h-full object-cover"
                 referrerPolicy="no-referrer"
+                whileHover={{ scale: 1.1 }}
+                transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
               />
               
               {/* Overlay */}
