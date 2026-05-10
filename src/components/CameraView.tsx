@@ -4,6 +4,7 @@ import { cn } from '../lib/utils';
 
 interface CameraViewProps {
   onFaceDetected?: (detection: faceapi.FaceDetection | null) => void;
+  onStreamCreated?: (stream: MediaStream) => void;
   isRecording?: boolean;
   activeFilter?: string;
   className?: string;
@@ -14,6 +15,7 @@ interface CameraViewProps {
 
 export const CameraView: React.FC<CameraViewProps> = ({ 
   onFaceDetected, 
+  onStreamCreated,
   isRecording, 
   activeFilter,
   className,
@@ -62,6 +64,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
       .then((stream) => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          onStreamCreated?.(stream);
           const track = stream.getVideoTracks()[0];
           // @ts-ignore - getCapabilities is not in all types
           if (track.getCapabilities) {

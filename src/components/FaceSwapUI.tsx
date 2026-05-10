@@ -44,7 +44,15 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'jpg' | 'gif'>('jpg');
   const [originalImage, setOriginalImage] = useState<string | null>(null);
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+
   // Cropper states
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
@@ -281,27 +289,36 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
       return;
     }
     const currentImg = resultImages[activeResultIndex];
-    if (!currentImg || isProcessing) return;
+    if (!currentImg && !recordedVideoUrl) return;
     setIsProcessing(true);
 
     try {
-      const canvas = document.createElement('canvas');
-      const img = new Image();
-      img.src = currentImg;
-      await new Promise((resolve) => (img.onload = resolve));
-      
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      ctx.filter = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`;
-      ctx.drawImage(img, 0, 0);
-      
-      const finalImage = canvas.toDataURL('image/jpeg', 0.7);
+      let finalUrl = currentImg;
+
+      if (recordedVideoUrl) {
+         // In a real app, you'd upload this to Firebase Storage
+         // For now we'll just treat it as valid
+         finalUrl = recordedVideoUrl;
+      } else if (currentImg) {
+        const canvas = document.createElement('canvas');
+        const img = new Image();
+        img.src = currentImg;
+        await new Promise((resolve) => (img.onload = resolve));
+        
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        
+        ctx.filter = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`;
+        ctx.drawImage(img, 0, 0);
+        
+        finalUrl = canvas.toDataURL('image/jpeg', 0.7);
+      }
 
       await addDoc(collection(db, 'posts'), {
-        imageUrl: finalImage,
+        imageUrl: finalUrl,
+        type: recordedVideoUrl ? 'video' : 'photo',
         authorId: user.uid,
         authorName: user.displayName || 'Anonymous',
         likes: 0,
@@ -309,14 +326,8 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
         createdAt: serverTimestamp(),
       });
 
-      // Remove from current results instead of closing everything?
-      // Or just close everything. TikTok usually does one by one.
-      setResultImages(prev => prev.filter((_, i) => i !== activeResultIndex));
-      if (resultImages.length <= 1) {
-        setResultImages([]);
-      } else {
-        setActiveResultIndex(0);
-      }
+      setResultImages([]);
+      setRecordedVideoUrl(null);
       alert("Post successful!");
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'posts');
@@ -325,11 +336,58 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
     }
   };
 
+  const handleStartRecording = () => {
+    if (!cameraStream) return;
+    
+    recordedChunksRef.current = [];
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
+      ? 'video/webm;codecs=vp9' 
+      : 'video/webm';
+      
+    const recorder = new MediaRecorder(cameraStream, { mimeType });
+    
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        recordedChunksRef.current.push(e.data);
+      }
+    };
+    
+    recorder.onstop = () => {
+      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      setRecordedVideoUrl(url);
+      setIsRecordingVideo(false);
+      setRecordingDuration(0);
+    };
+    
+    recorder.start();
+    mediaRecorderRef.current = recorder;
+    setIsRecordingVideo(true);
+    
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingDuration(prev => prev + 1);
+    }, 1000);
+  };
+
+  const handleStopRecording = () => {
+    if (mediaRecorderRef.current && isRecordingVideo) {
+      mediaRecorderRef.current.stop();
+      clearInterval(recordingTimerRef.current);
+    }
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className="relative h-screen w-screen bg-black text-white font-sans overflow-hidden">
       {/* Main Camera View */}
       <CameraView 
         onFaceDetected={(d) => setIsFaceDetected(!!d)}
+        onStreamCreated={setCameraStream}
         facingMode={facingMode}
         zoom={zoom}
         torch={torch}
@@ -364,7 +422,7 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
 
       {/* Result Preview Overlay */}
       <AnimatePresence mode="wait">
-        {resultImages.length > 0 && (
+        {(resultImages.length > 0 || recordedVideoUrl) && (
           <motion.div 
             key="result-overlay"
             initial={{ opacity: 0, scale: 1.1 }}
@@ -373,70 +431,93 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
             className="absolute inset-0 z-50 bg-black flex flex-col"
           >
             <div className="relative flex-1 overflow-hidden">
-              <motion.img 
-                key={activeResultIndex}
-                initial={{ opacity: 0, x: 50 }}
-                animate={{ opacity: 1, x: 0 }}
-                whileHover={{ scale: 1.05 }}
-                transition={{ type: 'spring', damping: 20, stiffness: 100 }}
-                src={resultImages[activeResultIndex]} 
-                alt="Swapped Result" 
-                className="w-full h-full object-cover transition-transform duration-500"
-                referrerPolicy="no-referrer"
-                style={{
-                  filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`
-                }}
-              />
+              {recordedVideoUrl ? (
+                <video 
+                  src={recordedVideoUrl} 
+                  controls 
+                  autoPlay 
+                  loop 
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <motion.img 
+                  key={activeResultIndex}
+                  initial={{ opacity: 0, x: 50 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  whileHover={{ scale: 1.05 }}
+                  transition={{ type: 'spring', damping: 20, stiffness: 100 }}
+                  src={resultImages[activeResultIndex]} 
+                  alt="Swapped Result" 
+                  className="w-full h-full object-cover transition-transform duration-500"
+                  referrerPolicy="no-referrer"
+                  style={{
+                    filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)`
+                  }}
+                />
+              )}
 
-              {/* Sequential Indicator */}
-              <div className="absolute top-24 left-1/2 -translate-x-1/2 flex gap-1 z-[60]">
-                {resultImages.map((_, i) => (
-                  <div 
-                    key={i}
-                    className={cn(
-                      "h-1 rounded-full transition-all duration-300",
-                      i === activeResultIndex ? "bg-white w-8 shadow-[0_0_10px_rgba(255,255,255,0.5)]" : "bg-white/30 w-4"
-                    )}
-                  />
-                ))}
-              </div>
+              {/* Sequential Indicator - only for images */}
+              {!recordedVideoUrl && resultImages.length > 1 && (
+                <div className="absolute top-24 left-1/2 -translate-x-1/2 flex gap-1 z-[60]">
+                  {resultImages.map((_, i) => (
+                    <div 
+                      key={i}
+                      className={cn(
+                        "h-1 rounded-full transition-all duration-300",
+                        i === activeResultIndex ? "bg-white w-8 shadow-[0_0_10px_rgba(255,255,255,0.5)]" : "bg-white/30 w-4"
+                      )}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
             
             {/* Confirmation Banner */}
             {!isConfirmed && (
               <div className="absolute inset-x-0 bottom-32 flex flex-col items-center gap-4 z-50">
                 <div className="px-6 py-3 bg-black/60 backdrop-blur-md rounded-2xl border border-white/20 text-center animate-in fade-in slide-in-from-bottom-5">
-                  <p className="text-sm font-bold uppercase tracking-widest text-white/90">Reviewing {activeResultIndex + 1} of {resultImages.length}</p>
-                  <p className="text-xs text-white/60">Generate next or confirm this one?</p>
+                  {recordedVideoUrl ? (
+                    <>
+                      <p className="text-sm font-bold uppercase tracking-widest text-white/90">Video Recorded</p>
+                      <p className="text-xs text-white/60">Ready to save or share?</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-bold uppercase tracking-widest text-white/90">Reviewing {activeResultIndex + 1} of {resultImages.length}</p>
+                      <p className="text-xs text-white/60">Generate next or confirm this one?</p>
+                    </>
+                  )}
                 </div>
                 <div className="flex gap-4">
                   <button 
                     onClick={() => {
-                      setResultImages(prev => prev.filter((_, i) => i !== activeResultIndex));
-                      if (resultImages.length <= 1) {
-                        setIsConfirmed(false);
+                      if (recordedVideoUrl) {
+                        setRecordedVideoUrl(null);
+                      } else {
+                        setResultImages(prev => prev.filter((_, i) => i !== activeResultIndex));
                       }
+                      setIsConfirmed(false);
                     }}
                     className="p-5 bg-red-500/20 backdrop-blur-md rounded-full border border-red-500/50 hover:bg-red-500/40 transition-all active:scale-95 flex items-center gap-2"
                   >
                     <Trash2 className="w-6 h-6 text-red-500" />
                     <span className="font-bold text-sm uppercase">Discard</span>
                   </button>
-                  {activeResultIndex < resultImages.length - 1 ? (
+                  {(recordedVideoUrl || activeResultIndex === resultImages.length - 1) ? (
+                    <button 
+                      onClick={() => setIsConfirmed(true)}
+                      className="p-5 bg-green-500 backdrop-blur-md rounded-full border border-green-400 hover:bg-green-400 transition-all active:scale-95 flex items-center gap-2 text-black shadow-[0_0_20px_rgba(34,197,94,0.4)]"
+                    >
+                      <Check className="w-6 h-6" />
+                      <span className="font-bold text-sm uppercase">Confirm</span>
+                    </button>
+                  ) : (
                     <button 
                       onClick={() => setActiveResultIndex(prev => prev + 1)}
                       className="p-5 bg-white backdrop-blur-md rounded-full border border-white/20 hover:bg-white/90 transition-all active:scale-95 flex items-center gap-2 text-black"
                     >
                       <RefreshCcw className="w-6 h-6" />
                       <span className="font-bold text-sm uppercase">Next Swap</span>
-                    </button>
-                  ) : (
-                    <button 
-                      onClick={() => setIsConfirmed(true)}
-                      className="p-5 bg-green-500 backdrop-blur-md rounded-full border border-green-400 hover:bg-green-400 transition-all active:scale-95 flex items-center gap-2 text-black shadow-[0_0_20px_rgba(34,197,94,0.4)]"
-                    >
-                      <Check className="w-6 h-6" />
-                      <span className="font-bold text-sm uppercase">Confirm All</span>
                     </button>
                   )}
                 </div>
@@ -448,6 +529,7 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
               <button 
                 onClick={() => {
                   setResultImages([]);
+                  setRecordedVideoUrl(null);
                   setIsConfirmed(false);
                   setShowFilters(false);
                   setFilters({ brightness: 100, contrast: 100, saturation: 100 });
@@ -463,7 +545,7 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
                   animate={{ x: 0, opacity: 1 }}
                   className="flex gap-3"
                 >
-                  {resultImages.length > 1 && (
+                  {!recordedVideoUrl && resultImages.length > 1 && (
                     <div className="flex gap-1 overflow-x-auto p-1 max-w-[150px] no-scrollbar mr-2">
                        {resultImages.map((img, i) => (
                          <button 
@@ -483,34 +565,47 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
                   <div className="flex bg-black/40 backdrop-blur-md rounded-full border border-white/10 overflow-hidden">
                     <button 
                       onClick={() => setDownloadFormat('jpg')}
-                      className={cn("px-3 py-2 text-[10px] font-bold uppercase transition-colors", downloadFormat === 'jpg' ? "bg-white text-black" : "hover:bg-white/10")}
+                      disabled={!!recordedVideoUrl}
+                      className={cn("px-3 py-2 text-[10px] font-bold uppercase transition-colors disabled:opacity-30", downloadFormat === 'jpg' ? "bg-white text-black" : "hover:bg-white/10")}
                     >
                       JPG
                     </button>
                     <button 
                       onClick={() => setDownloadFormat('gif')}
-                      className={cn("px-3 py-2 text-[10px] font-bold uppercase transition-colors border-l border-white/10", downloadFormat === 'gif' ? "bg-white text-black" : "hover:bg-white/10")}
+                      disabled={!!recordedVideoUrl}
+                      className={cn("px-3 py-2 text-[10px] font-bold uppercase transition-colors border-l border-white/10 disabled:opacity-30", downloadFormat === 'gif' ? "bg-white text-black" : "hover:bg-white/10")}
                     >
                       GIF
                     </button>
                     <button 
-                      onClick={handleDownload}
+                      onClick={() => {
+                        if (recordedVideoUrl) {
+                          const link = document.createElement('a');
+                          link.href = recordedVideoUrl;
+                          link.download = `recording-${Date.now()}.webm`;
+                          link.click();
+                        } else {
+                          handleDownload();
+                        }
+                      }}
                       className="px-4 py-2 hover:bg-white/10 transition-colors border-l border-white/10"
-                      title={`Download as ${downloadFormat.toUpperCase()}`}
+                      title={recordedVideoUrl ? "Download Video" : `Download as ${downloadFormat.toUpperCase()}`}
                     >
                       <Download className="w-5 h-5" />
                     </button>
                   </div>
                   
-                  <button 
-                    onClick={() => setShowFilters(!showFilters)}
-                    className={cn(
-                      "p-3 backdrop-blur-md rounded-full border border-white/10 transition-colors",
-                      showFilters ? "bg-white text-black" : "bg-black/40 hover:bg-black/60"
-                    )}
-                  >
-                    <Settings className="w-6 h-6" />
-                  </button>
+                  {!recordedVideoUrl && (
+                    <button 
+                      onClick={() => setShowFilters(!showFilters)}
+                      className={cn(
+                        "p-3 backdrop-blur-md rounded-full border border-white/10 transition-colors",
+                        showFilters ? "bg-white text-black" : "bg-black/40 hover:bg-black/60"
+                      )}
+                    >
+                      <Settings className="w-6 h-6" />
+                    </button>
+                  )}
                   <button 
                     onClick={handlePost}
                     className="px-6 py-3 bg-white text-black font-bold rounded-full hover:bg-white/90 transition-colors shadow-[0_0_15px_rgba(255,255,255,0.3)]"
@@ -704,33 +799,57 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
 
           {/* Bottom Controls */}
           <div className="absolute bottom-12 left-0 right-0 flex flex-col items-center gap-8 z-20">
+            {/* Recording Indicator */}
+            <AnimatePresence>
+              {isRecordingVideo && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  className="flex items-center gap-3 px-4 py-2 bg-black/60 backdrop-blur-md rounded-2xl border border-red-500/30"
+                >
+                  <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse shadow-[0_0_10px_rgba(220,38,38,0.8)]" />
+                  <span className="font-mono text-sm font-bold tracking-tighter text-white/90">{formatDuration(recordingDuration)}</span>
+                  <div className="w-px h-3 bg-white/20" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-red-500">REC</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Status Indicator */}
-            <div className="flex items-center gap-2 px-4 py-1.5 bg-black/40 backdrop-blur-md rounded-full border border-white/10">
-              <div className={cn("w-2 h-2 rounded-full animate-pulse", isFaceDetected ? "bg-green-500" : "bg-red-500")} />
-              <span className="text-[10px] font-bold uppercase tracking-widest">
-                {isFaceDetected ? "Face Detected" : "Searching for Face..."}
-              </span>
-            </div>
+            {!isRecordingVideo && (
+              <div className="flex items-center gap-2 px-4 py-1.5 bg-black/40 backdrop-blur-md rounded-full border border-white/10">
+                <div className={cn("w-2 h-2 rounded-full animate-pulse", isFaceDetected ? "bg-green-500" : "bg-red-500")} />
+                <span className="text-[10px] font-bold uppercase tracking-widest">
+                  {isFaceDetected ? "Face Detected" : "Searching for Face..."}
+                </span>
+              </div>
+            )}
 
             <div className="flex items-center justify-center gap-12 w-full px-10">
               {/* Effects Button */}
-              <button className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+              <button className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-20" disabled={isRecordingVideo}>
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
                   <Zap className="w-6 h-6 fill-white" />
                 </div>
                 <span className="text-[10px] font-bold uppercase">Effects</span>
               </button>
 
-              {/* Capture Button */}
+              {/* Capture/Record Button */}
               <button 
-                onClick={handleCapture}
+                onClick={mode === 'video' || mode === 'live' ? (isRecordingVideo ? handleStopRecording : handleStartRecording) : handleCapture}
                 disabled={isProcessing}
                 className="relative group active:scale-90 transition-transform"
               >
-                <div className="w-20 h-20 rounded-full border-[6px] border-white/30 flex items-center justify-center">
+                <div className={cn(
+                  "w-20 h-20 rounded-full border-[6px] flex items-center justify-center transition-colors",
+                  isRecordingVideo ? "border-red-500/30" : "border-white/30"
+                )}>
                   <div className={cn(
-                    "w-16 h-16 rounded-full transition-all duration-300 relative overflow-hidden",
-                    isProcessing ? "bg-red-500 scale-75 rounded-lg" : "bg-white"
+                    "transition-all duration-300 shadow-xl",
+                    isProcessing ? "bg-red-500 scale-75 rounded-lg w-16 h-16" : 
+                    isRecordingVideo ? "bg-red-600 rounded-lg w-10 h-10" :
+                    mode === 'video' ? "bg-red-500 rounded-full w-16 h-16" : "bg-white rounded-full w-16 h-16"
                   )}>
                     {isProcessing && processingIndex !== null && (
                       <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-[10px] font-black text-white">
@@ -749,6 +868,7 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
                       stroke="white"
                       strokeWidth="4"
                       strokeDasharray="232"
+                      strokeDashoffset="232"
                       className="animate-[dash_2s_linear_infinite]"
                       style={{
                         strokeDashoffset: 232,
@@ -762,12 +882,13 @@ export const FaceSwapUI: React.FC<FaceSwapUIProps> = ({ onOpenGallery, user }) =
               {/* Upload Button */}
               <button 
                 onClick={() => videoInputRef.current?.click()}
-                className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity"
+                className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-20"
+                disabled={isRecordingVideo}
               >
                 <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center border border-white/10">
                   <Upload className="w-6 h-6" />
                 </div>
-                <span className="text-[10px] font-bold uppercase">Video</span>
+                <span className="text-[10px] font-bold uppercase">Upload</span>
               </button>
             </div>
           </div>
